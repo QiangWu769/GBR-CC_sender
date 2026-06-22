@@ -4,6 +4,22 @@ This repository implements GBR-CC in MsQuic/secnetperf. GBR-CC uses cellular
 scheduler telemetry from the phone modem to guide QUIC uplink pacing rate and
 congestion window control.
 
+## Companion Cloud Server
+
+This repository is the phone-side, host-parser, and sender-side GBR-CC
+implementation. It is designed to run together with the companion cloud receiver
+repository:
+
+```text
+https://github.com/QiangWu769/msquic-cloud-server
+```
+
+Use `msquic_cellular` for the phone DIAG bridge, host DIAG parser, GBR ratio
+delivery, and the MsQuic/secnetperf sender. Use `msquic-cloud-server` on the
+cloud machine to build and start the remote secnetperf receiver. The cloud
+server IP from that repository is the `<server-ip>` used by the sender commands
+below.
+
 ## GBR-CC Data Path
 
 ![GBR-CC data path](docs/gbr-cc/gbr_cc_data_path.svg)
@@ -164,6 +180,16 @@ The parser connects to `127.0.0.1:43555`, computes the ratio, and sends it to
 MsQuic as one `double` on `/tmp/msquic_cellular_ratio.sock`.
 
 ### 6. Run GBR-CC in `secnetperf`
+
+First start the receiver on the cloud server from the companion repository:
+
+```bash
+git clone https://github.com/QiangWu769/msquic-cloud-server.git
+cd msquic-cloud-server
+```
+
+Follow that repository's README to build and start the cloud-side receiver on
+port `4433`. Then use that cloud machine's IP address as `<server-ip>` below.
 
 A minimal upload run:
 
