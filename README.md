@@ -1,4 +1,4 @@
-# msquic_cellular
+# GBR-CC_sender
 
 This repository implements GBR-CC in MsQuic/secnetperf. GBR-CC uses cellular
 scheduler telemetry from the phone modem to guide QUIC uplink pacing rate and
@@ -11,11 +11,11 @@ implementation. It is designed to run together with the companion cloud receiver
 repository:
 
 ```text
-https://github.com/QiangWu769/msquic-cloud-server
+https://github.com/QiangWu769/GBR-CC_reciver
 ```
 
-Use `msquic_cellular` for the phone DIAG bridge, host DIAG parser, GBR ratio
-delivery, and the MsQuic/secnetperf sender. Use `msquic-cloud-server` on the
+Use `GBR-CC_sender` for the phone DIAG bridge, host DIAG parser, GBR ratio
+delivery, and the MsQuic/secnetperf sender. Use `GBR-CC_reciver` on the
 cloud machine to build and start the remote secnetperf receiver. The cloud
 server IP from that repository is the `<server-ip>` used by the sender commands
 below.
@@ -93,15 +93,15 @@ Use one host parser based on the radio mode:
 Fresh checkout:
 
 ```bash
-git clone https://github.com/QiangWu769/msquic_cellular.git
-cd msquic_cellular
+git clone https://github.com/QiangWu769/GBR-CC_sender.git
+cd GBR-CC_sender
 git submodule update --init --recursive
 ```
 
 Existing checkout:
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 git submodule sync --recursive
 git submodule update --init --recursive
 ```
@@ -109,7 +109,7 @@ git submodule update --init --recursive
 ### 2. Build `secnetperf`
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 rm -rf build
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
@@ -122,13 +122,13 @@ cmake --build build --target secnetperf -j"$(nproc)"
 Expected binary:
 
 ```text
-/home/qwu26/msquic_cellular/build/bin/Release/secnetperf
+/home/qwu26/GBR-CC_sender/build/bin/Release/secnetperf
 ```
 
 ### 3. Build and install `cellninjia_mobile`
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 make -C tools/cellninjia/cellninjia_mobile clean all
 make -C tools/cellninjia/cellninjia_mobile push
 ```
@@ -165,14 +165,14 @@ adb shell su -c /data/local/tmp/cellninjia_mobile
 Run exactly one parser for the current radio mode:
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 python3 tools/cellninjia/diag_get_lte_msquic.py
 ```
 
 or:
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 python3 tools/cellninjia/diag_get_5g_msquic.py
 ```
 
@@ -184,8 +184,8 @@ MsQuic as one `double` on `/tmp/msquic_cellular_ratio.sock`.
 First start the receiver on the cloud server from the companion repository:
 
 ```bash
-git clone https://github.com/QiangWu769/msquic-cloud-server.git
-cd msquic-cloud-server
+git clone https://github.com/QiangWu769/GBR-CC_reciver.git
+cd GBR-CC_reciver
 ```
 
 Follow that repository's README to build and start the cloud-side receiver on
@@ -194,7 +194,7 @@ port `4433`. Then use that cloud machine's IP address as `<server-ip>` below.
 A minimal upload run:
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 ./build/bin/Release/secnetperf \
   -target:<server-ip> \
   -port:4433 \
@@ -210,7 +210,7 @@ cd /home/qwu26/msquic_cellular
 ### 7. Run fairness experiments
 
 ```bash
-cd /home/qwu26/msquic_cellular
+cd /home/qwu26/GBR-CC_sender
 ./scripts/fairness_gbr_vs_bbr.sh 20mb bbr
 ```
 
