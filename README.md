@@ -1,5 +1,9 @@
 # GBR-CC_sender
 
+This repository is part of the artifact for the SIGCOMM 2026 paper
+**"Synchronizing with the Scheduler: Dual-Loop Congestion Control for 5G Uplink
+on Commodity Devices."**
+
 This repository implements GBR-CC in MsQuic/secnetperf. GBR-CC uses cellular
 scheduler telemetry from the phone modem to guide QUIC uplink pacing rate and
 congestion window control.
