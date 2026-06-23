@@ -15,11 +15,11 @@ implementation. It is designed to run together with the companion cloud receiver
 repository:
 
 ```text
-https://github.com/QiangWu769/GBR-CC_reciver
+https://github.com/QiangWu769/GBR-CC_receiver
 ```
 
 Use `GBR-CC_sender` for the phone DIAG bridge, host DIAG parser, GBR ratio
-delivery, and the MsQuic/secnetperf sender. Use `GBR-CC_reciver` on the
+delivery, and the MsQuic/secnetperf sender. Use `GBR-CC_receiver` on the
 cloud machine to build and start the remote secnetperf receiver. The cloud
 server IP from that repository is the `<server-ip>` used by the sender commands
 below.
@@ -188,8 +188,8 @@ MsQuic as one `double` on `/tmp/msquic_cellular_ratio.sock`.
 First start the receiver on the cloud server from the companion repository:
 
 ```bash
-git clone https://github.com/QiangWu769/GBR-CC_reciver.git
-cd GBR-CC_reciver
+git clone https://github.com/QiangWu769/GBR-CC_receiver.git
+cd GBR-CC_receiver
 ```
 
 Follow that repository's README to build and start the cloud-side receiver on
