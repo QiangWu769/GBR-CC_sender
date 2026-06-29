@@ -237,6 +237,18 @@ typedef struct QUIC_CONGESTION_CONTROL_BBR {
     uint64_t RecentAckDelay;        // Ack delay used in recent delivery rate calculation (microseconds)
 
     //
+    // Cellular outer-loop gating. The delay-based overuse detector only
+    // switches out of the GBR inner loop after the cellular ratio has stayed
+    // above the target threshold for a short guard interval.
+    //
+    BOOLEAN CellularRatioAboveThresholdStartTimeValid;
+    uint64_t CellularRatioAboveThresholdStartTime;
+    BOOLEAN CellularOveruseStartTimeValid;
+    uint64_t CellularOveruseStartTime;
+    BOOLEAN CellularOuterLoopLastBackoffTimeValid;
+    uint64_t CellularOuterLoopLastBackoffTime;
+
+    //
     // Trendline slope estimator for delay-based congestion detection
     //
     TRENDLINE_ESTIMATOR TrendlineEstimator;

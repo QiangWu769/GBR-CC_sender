@@ -19,6 +19,12 @@ Abstract:
 #define TRENDLINE_UPDATE_INTERVAL_US 50000    // 50ms update interval (similar to WebRTC)
 #define TRENDLINE_MIN_SAMPLES_PER_UPDATE 2    // Minimum samples before updating slope
 
+typedef enum TRENDLINE_OVERUSE_STATE {
+    TRENDLINE_UNDERUSING = -1,
+    TRENDLINE_NORMAL = 0,
+    TRENDLINE_OVERUSING = 1
+} TRENDLINE_OVERUSE_STATE;
+
 typedef struct TRENDLINE_PACKET_TIMING {
     double ArrivalTimeMs;      // Arrival time (relative to first packet)
     double SmoothedDelayMs;    // Smoothed delay
@@ -52,6 +58,10 @@ typedef struct TRENDLINE_ESTIMATOR {
     double Threshold;          // Adaptive threshold
     int64_t LastUpdateTimeUs;
     int32_t NumDeltas;
+    double ModifiedTrend;      // Scaled slope used for overuse detection
+    double TimeOverUsingMs;    // Time spent above the overuse threshold
+    int32_t OveruseCounter;    // Consecutive over-threshold updates
+    TRENDLINE_OVERUSE_STATE OveruseState;
 
     //
     // Interval-based update control (similar to WebRTC packet grouping)
@@ -109,6 +119,24 @@ TrendlineEstimatorUpdateBatch(
 //
 double
 TrendlineEstimatorGetSlope(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    );
+
+//
+// Get current overuse detector state
+//
+TRENDLINE_OVERUSE_STATE
+TrendlineEstimatorGetOveruseState(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    );
+
+BOOLEAN
+TrendlineEstimatorIsOverusing(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    );
+
+const char*
+TrendlineEstimatorGetOveruseStateName(
     _In_ const TRENDLINE_ESTIMATOR* Estimator
     );
 

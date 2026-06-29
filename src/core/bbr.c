@@ -67,6 +67,120 @@ IsCellularControlEnabled(void) {
     return g_CellularControlEnabled != 0;
 }
 
+#define CELLULAR_OUTER_LOOP_RATIO_THRESHOLD 0.2
+#define CELLULAR_OUTER_LOOP_RATIO_HOLD_US 100000
+#define CELLULAR_OUTER_LOOP_OVERUSE_HOLD_US 100000
+#define CELLULAR_OUTER_LOOP_BACKOFF_COOLDOWN_US 200000
+#define CELLULAR_OUTER_LOOP_BACKOFF_FACTOR 0.95
+#define CELLULAR_OUTER_LOOP_MAX_REDUCTION_PER_BACKOFF 0.95
+#define CELLULAR_OUTER_LOOP_BACKOFF_MARGIN_BYTES_PER_SEC 625.0
+#define CELLULAR_OUTER_LOOP_MIN_REDUCTION_INTERVAL_US 10000
+#define CELLULAR_OUTER_LOOP_MAX_REDUCTION_INTERVAL_US 200000
+#define CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC 100000.0
+
+static BOOLEAN
+IsCellularControlActive(
+    void
+    )
+{
+    return IsCellularRatioAvailable() && IsCellularControlEnabled();
+}
+
+static BOOLEAN
+IsCellularOuterLoopRatioGateOpen(
+    _In_ const QUIC_CONGESTION_CONTROL_BBR* Bbr
+    )
+{
+    return Bbr->CellularRatioAboveThresholdStartTimeValid &&
+           CxPlatTimeDiff64(
+               Bbr->CellularRatioAboveThresholdStartTime,
+               CxPlatTimeUs64()) >= CELLULAR_OUTER_LOOP_RATIO_HOLD_US;
+}
+
+static void
+UpdateCellularOuterLoopRatioGate(
+    _In_ QUIC_CONGESTION_CONTROL_BBR* Bbr,
+    _In_ uint64_t TimeNow
+    )
+{
+    if (!IsCellularControlActive() ||
+        GetCellularRatio() <= CELLULAR_OUTER_LOOP_RATIO_THRESHOLD) {
+        Bbr->CellularRatioAboveThresholdStartTimeValid = FALSE;
+        Bbr->CellularRatioAboveThresholdStartTime = 0;
+        return;
+    }
+
+    if (!Bbr->CellularRatioAboveThresholdStartTimeValid) {
+        Bbr->CellularRatioAboveThresholdStartTimeValid = TRUE;
+        Bbr->CellularRatioAboveThresholdStartTime = TimeNow;
+    }
+}
+
+static BOOLEAN
+IsCellularOuterLoopOveruseGateOpen(
+    _In_ const QUIC_CONGESTION_CONTROL_BBR* Bbr
+    )
+{
+    return Bbr->CellularOveruseStartTimeValid &&
+           CxPlatTimeDiff64(
+               Bbr->CellularOveruseStartTime,
+               CxPlatTimeUs64()) >= CELLULAR_OUTER_LOOP_OVERUSE_HOLD_US;
+}
+
+static BOOLEAN
+IsCellularOuterLoopBackoffCooldownActive(
+    _In_ const QUIC_CONGESTION_CONTROL_BBR* Bbr
+    )
+{
+    return Bbr->CellularOuterLoopLastBackoffTimeValid &&
+           CxPlatTimeDiff64(
+               Bbr->CellularOuterLoopLastBackoffTime,
+               CxPlatTimeUs64()) < CELLULAR_OUTER_LOOP_BACKOFF_COOLDOWN_US;
+}
+
+static void
+UpdateCellularOuterLoopOveruseGate(
+    _In_ QUIC_CONGESTION_CONTROL_BBR* Bbr,
+    _In_ uint64_t TimeNow
+    )
+{
+    if (!IsCellularControlActive() ||
+        !TrendlineEstimatorIsOverusing(&Bbr->TrendlineEstimator)) {
+        Bbr->CellularOveruseStartTimeValid = FALSE;
+        Bbr->CellularOveruseStartTime = 0;
+        return;
+    }
+
+    if (!Bbr->CellularOveruseStartTimeValid) {
+        Bbr->CellularOveruseStartTimeValid = TRUE;
+        Bbr->CellularOveruseStartTime = TimeNow;
+    }
+}
+
+static BOOLEAN
+IsCellularOuterLoopActive(
+    _In_ const QUIC_CONGESTION_CONTROL_BBR* Bbr
+    )
+{
+    BOOLEAN OuterLoopCondition =
+        IsCellularControlActive() &&
+        GetCellularRatio() > CELLULAR_OUTER_LOOP_RATIO_THRESHOLD &&
+        IsCellularOuterLoopRatioGateOpen(Bbr) &&
+        TrendlineEstimatorIsOverusing(&Bbr->TrendlineEstimator) &&
+        IsCellularOuterLoopOveruseGateOpen(Bbr) &&
+        !IsCellularOuterLoopBackoffCooldownActive(Bbr);
+    UNREFERENCED_PARAMETER(OuterLoopCondition);
+    return FALSE;
+}
+
+static BOOLEAN
+IsCellularInnerLoopActive(
+    _In_ const QUIC_CONGESTION_CONTROL_BBR* Bbr
+    )
+{
+    return IsCellularControlActive() && !IsCellularOuterLoopActive(Bbr);
+}
+
 static inline int
 IsTestModeEnabled(void) {
     if (&g_TestModeEnabled == NULL) {
@@ -177,8 +291,8 @@ GetRatioGain(double ratio) {
     // 参数配置
     const double k = 25.0;            // sigmoid 陡峭程度
     const double threshold = 0.2;     // 分界点
-    const double center_low = 0.0;    // 减速区 sigmoid 中心点
-    const double center_high = 0.4;   // 加速区 sigmoid 中心点
+    const double center_low = 0.15;   // 减速区 sigmoid 中心点
+    const double center_high = 0.25;  // 加速区 sigmoid 中心点
 
     // 预计算归一化常数
     double s_low_0  = Sigmoid(k * (0.0 - center_low));
@@ -220,8 +334,8 @@ UpdateRatioPacingRate(double ratio, uint64_t BandwidthEst) {
     if (g_RatioPacingRate <= 0.0) {
         // 初始化：使用当前带宽估计
         g_RatioPacingRate = (double)BandwidthEst / RATIO_BW_UNIT;
-        if (g_RatioPacingRate < 100000.0) {
-            g_RatioPacingRate = 100000.0;  // 最小 100 KB/s
+        if (g_RatioPacingRate < CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC) {
+            g_RatioPacingRate = CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC;  // 最小 100 KB/s
         }
     }
 
@@ -247,8 +361,8 @@ UpdateRatioPacingRate(double ratio, uint64_t BandwidthEst) {
     g_RatioPacingRate *= gain;
 
     // 限制范围
-    if (g_RatioPacingRate < 100000.0) {
-        g_RatioPacingRate = 100000.0;
+    if (g_RatioPacingRate < CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC) {
+        g_RatioPacingRate = CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC;
     }
     if (g_RatioPacingRate > 100000000.0) {
         g_RatioPacingRate = 100000000.0;
@@ -273,6 +387,68 @@ ConsumeCellularRatioUpdate(uint64_t RatioUpdateSeq) {
 static inline uint64_t
 GetRatioPacingRate(void) {
     return (uint64_t)g_RatioPacingRate;
+}
+
+static inline uint64_t
+GetCellularOuterLoopReductionInterval(uint64_t MinRtt) {
+    uint64_t Interval = MinRtt;
+    if (Interval == 0 || Interval == UINT64_MAX) {
+        Interval = CELLULAR_OUTER_LOOP_MAX_REDUCTION_INTERVAL_US;
+    }
+    if (Interval < CELLULAR_OUTER_LOOP_MIN_REDUCTION_INTERVAL_US) {
+        Interval = CELLULAR_OUTER_LOOP_MIN_REDUCTION_INTERVAL_US;
+    }
+    if (Interval > CELLULAR_OUTER_LOOP_MAX_REDUCTION_INTERVAL_US) {
+        Interval = CELLULAR_OUTER_LOOP_MAX_REDUCTION_INTERVAL_US;
+    }
+    return Interval;
+}
+
+static BOOLEAN
+ApplyCellularOuterLoopBackoff(
+    _In_ QUIC_CONGESTION_CONTROL_BBR* Bbr,
+    _In_ uint64_t TimeNow,
+    _In_ uint64_t EstimatedThroughputBps,
+    _In_ uint64_t MinRtt
+    )
+{
+    if (!IsCellularOuterLoopActive(Bbr) || EstimatedThroughputBps == 0) {
+        return FALSE;
+    }
+
+    uint64_t ReductionInterval =
+        GetCellularOuterLoopReductionInterval(MinRtt);
+    if (Bbr->CellularOuterLoopLastBackoffTimeValid &&
+        CxPlatTimeDiff64(
+            Bbr->CellularOuterLoopLastBackoffTime,
+            TimeNow) < ReductionInterval) {
+        return FALSE;
+    }
+
+    Bbr->CellularOuterLoopLastBackoffTimeValid = TRUE;
+    Bbr->CellularOuterLoopLastBackoffTime = TimeNow;
+
+    double TargetRate =
+        ((double)EstimatedThroughputBps * CELLULAR_OUTER_LOOP_BACKOFF_FACTOR /
+         RATIO_BW_UNIT) -
+        CELLULAR_OUTER_LOOP_BACKOFF_MARGIN_BYTES_PER_SEC;
+    if (g_RatioPacingRate > 0.0) {
+        double MaxReductionRate =
+            g_RatioPacingRate * CELLULAR_OUTER_LOOP_MAX_REDUCTION_PER_BACKOFF;
+        if (TargetRate < MaxReductionRate) {
+            TargetRate = MaxReductionRate;
+        }
+    }
+    if (TargetRate < CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC) {
+        TargetRate = CELLULAR_MIN_PACING_RATE_BYTES_PER_SEC;
+    }
+
+    if (g_RatioPacingRate <= 0.0 || TargetRate < g_RatioPacingRate) {
+        g_RatioPacingRate = TargetRate;
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 static inline uint64_t
@@ -583,10 +759,10 @@ BbrCongestionControlGetCongestionWindow(
     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
 
     //
-    // cellular:1 模式下，完全由 ratio 控制 cwnd
-    // 使用 ratioCwnd = pacing_rate × RTT × 2
+    // cellular:1 uses the cellular pacing rate for cwnd. The rate is normally
+    // driven by GBR ratio and can be clamped by the outer delay backoff.
     //
-    if (IsCellularRatioAvailable() && IsCellularControlEnabled()) {
+    if (IsCellularControlActive()) {
         uint32_t ratioCwnd = GetRatioCwnd(Bbr->MinRtt);
         if (ratioCwnd > 0) {
             // 确保不低于最小 cwnd
@@ -1126,10 +1302,10 @@ BbrCongestionControlGetSendAllowance(
     }
 
     //
-    // cellular:1 模式下，完全由 ratio 控制发送速率
-    // 使用 ratioPacingRate 计算发送配额
+    // cellular:1 uses the cellular pacing rate for send allowance. The rate is
+    // normally driven by GBR ratio and can be clamped by the outer delay backoff.
     //
-    if (IsCellularRatioAvailable() && IsCellularControlEnabled()) {
+    if (IsCellularControlActive()) {
         uint64_t ratioPacingRate = GetRatioPacingRate();
 
         if (Bbr->BytesInFlight >= CongestionWindow) {
@@ -1436,6 +1612,8 @@ BbrCongestionControlOnDataAcknowledged(
             AckEvent->AdjustedAckTime,
             BatchTotalBytes);
     }
+    UpdateCellularOuterLoopRatioGate(Bbr, AckEvent->TimeNow);
+    UpdateCellularOuterLoopOveruseGate(Bbr, AckEvent->TimeNow);
 
     // Get trendline slope (available for rate adjustment or logging)
     // double trendlineSlope = TrendlineEstimatorGetSlope(&Bbr->TrendlineEstimator);
@@ -1465,7 +1643,7 @@ BbrCongestionControlOnDataAcknowledged(
     //
     // cellular:1 模式下跳过 PROBE_BW pacing cycle 和 STARTUP bandwidth probing
     //
-    if (!(IsCellularRatioAvailable() && IsCellularControlEnabled())) {
+    if (!IsCellularControlActive()) {
         if (Bbr->BbrState == BBR_STATE_PROBE_BW) {
             BOOLEAN ShouldAdvancePacingGainCycle = CxPlatTimeDiff64(AckEvent->TimeNow, Bbr->CycleStart) > Bbr->MinRtt;
 
@@ -1502,9 +1680,9 @@ BbrCongestionControlOnDataAcknowledged(
     }
 
     //
-    // cellular:1 模式下跳过所有 BBR 状态转换，完全由 ratio 控制
+    // cellular:1 模式下跳过所有 BBR 状态转换，完全由 ratio/outer backoff 控制
     //
-    if (!(IsCellularRatioAvailable() && IsCellularControlEnabled())) {
+    if (!IsCellularControlActive()) {
         // 非 cellular 模式：正常 BBR 状态机
         if (Bbr->BbrState == BBR_STATE_STARTUP && Bbr->BtlbwFound) {
             BbrCongestionControlTransitToDrain(Cc);
@@ -1560,12 +1738,31 @@ BbrCongestionControlOnDataAcknowledged(
         uint64_t ratioPacingRate = 0;
         uint64_t ratioBaseRtt = GetRatioBaseRtt(MinRtt);
         uint32_t ratioCwnd = 0;
+        BOOLEAN cellularInnerLoopActive = IsCellularInnerLoopActive(Bbr);
+        BOOLEAN cellularOuterLoopActive = IsCellularOuterLoopActive(Bbr);
+        BOOLEAN cellularOuterBackoffApplied = FALSE;
+        BOOLEAN cellularOveruseGateOpen =
+            IsCellularOuterLoopOveruseGateOpen(Bbr);
+        BOOLEAN cellularBackoffCooldown =
+            IsCellularOuterLoopBackoffCooldownActive(Bbr);
+        double trendlineSlope = TrendlineEstimatorGetSlope(&Bbr->TrendlineEstimator);
+        const char* overuseState =
+            TrendlineEstimatorGetOveruseStateName(&Bbr->TrendlineEstimator);
+        const char* loopName =
+            !IsCellularControlActive() ? "BBR" :
+            (cellularOuterLoopActive ? "OUTER_GCC" : "INNER_GBR");
 
         // 只有收到新的 cellular ratio 样本时才更新速率；旧 ratio 在多个 ACK 上复用时保持当前速率。
         if (IsCellularRatioAvailable()) {
-            cellularRatioFresh = ConsumeCellularRatioUpdate(cellularRatioSeq);
-            if (cellularRatioFresh) {
-                UpdateRatioPacingRate(cellularRatio, EstimatedBandwidth);
+            if (cellularOuterLoopActive) {
+                cellularOuterBackoffApplied =
+                    ApplyCellularOuterLoopBackoff(
+                        Bbr, AckEvent->TimeNow, DeliveryRate, MinRtt);
+            } else if (cellularInnerLoopActive) {
+                cellularRatioFresh = ConsumeCellularRatioUpdate(cellularRatioSeq);
+                if (cellularRatioFresh) {
+                    UpdateRatioPacingRate(cellularRatio, EstimatedBandwidth);
+                }
             }
             ratioPacingRate = GetRatioPacingRate();
             ratioBaseRtt = GetRatioBaseRtt(MinRtt);
@@ -1607,7 +1804,9 @@ BbrCongestionControlOnDataAcknowledged(
                        "RTT=%lu us, MinRTT=%lu us, SampleRTT=%lu us, CWND=%u B, InFlight=%u B, "
                        "Loss=%.2f%%, State=%s, TotalSent=%lu, TotalLost=%lu, PacingGain=%.2fx, CwndGain=%.2fx, "
                        "CellularRatioRaw=%.3f, CellularRatioSmoothed=%.3f, CellularGain=%.4f, "
-                       "RatioPacingRate=%.2f Mbps, RatioCwnd=%u B, RatioBaseRTT=%lu us, RatioSeq=%lu, RatioFresh=%d\n",
+                       "RatioPacingRate=%.2f Mbps, RatioCwnd=%u B, RatioBaseRTT=%lu us, RatioSeq=%lu, RatioFresh=%d, "
+                       "TrendlineSlope=%.6f, OveruseState=%s, Loop=%s, "
+                       "OuterBackoff=%d, OveruseGate=%d, BackoffCooldown=%d\n",
                        ConnectionDuration / 1000000.0,
                        (unsigned long)AckedPacket->PacketNumber,
                        AckedPacket->PacketLength,
@@ -1635,7 +1834,13 @@ BbrCongestionControlOnDataAcknowledged(
                        ratioCwnd,
                        (unsigned long)ratioBaseRtt,
                        (unsigned long)cellularRatioSeq,
-                       cellularRatioFresh);
+                       cellularRatioFresh,
+                       trendlineSlope,
+                       overuseState,
+                       loopName,
+                       cellularOuterBackoffApplied,
+                       cellularOveruseGateOpen,
+                       cellularBackoffCooldown);
                 fclose(logFile);
             }
 
@@ -1882,6 +2087,12 @@ BbrCongestionControlReset(
     Bbr->RecentSendRate = 0;
     Bbr->RecentAckRate = 0;
     Bbr->RecentDeliveryRate = 0;
+    Bbr->CellularRatioAboveThresholdStartTimeValid = FALSE;
+    Bbr->CellularRatioAboveThresholdStartTime = 0;
+    Bbr->CellularOveruseStartTimeValid = FALSE;
+    Bbr->CellularOveruseStartTime = 0;
+    Bbr->CellularOuterLoopLastBackoffTimeValid = FALSE;
+    Bbr->CellularOuterLoopLastBackoffTime = 0;
 
     QuicSlidingWindowExtremumReset(&Bbr->MaxAckHeightFilter);
 
@@ -1996,6 +2207,12 @@ BbrCongestionControlInitialize(
     // Initialize delay tracking fields
     Bbr->RecentSendDelay = 0;
     Bbr->RecentAckDelay = 0;
+    Bbr->CellularRatioAboveThresholdStartTimeValid = FALSE;
+    Bbr->CellularRatioAboveThresholdStartTime = 0;
+    Bbr->CellularOveruseStartTimeValid = FALSE;
+    Bbr->CellularOveruseStartTime = 0;
+    Bbr->CellularOuterLoopLastBackoffTimeValid = FALSE;
+    Bbr->CellularOuterLoopLastBackoffTime = 0;
 
     // Initialize trendline slope estimator
     TrendlineEstimatorInitialize(&Bbr->TrendlineEstimator);

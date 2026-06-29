@@ -19,6 +19,9 @@ Abstract:
 #endif
 
 #define TRENDLINE_THRESHOLD_GAIN 4.0
+#define TRENDLINE_MIN_NUM_DELTAS 60
+#define TRENDLINE_OVERUSING_TIME_THRESHOLD_MS 10.0
+#define TRENDLINE_OVERUSE_COUNTER_THRESHOLD 1
 #define K_UP   0.0087
 #define K_DOWN 0.039
 
@@ -34,6 +37,7 @@ TrendlineEstimatorInitialize(
     Estimator->LastSlopeUpdateTimeUs = -1;
     Estimator->SamplesInCurrentInterval = 0;
     Estimator->IntervalAccumulatedDelay = 0.0;
+    Estimator->OveruseState = TRENDLINE_NORMAL;
 }
 
 //
@@ -72,6 +76,45 @@ LinearFitSlope(
         return 0.0;
     }
     return numerator / denominator;
+}
+
+static void
+TrendlineEstimatorDetectOveruse(
+    _Inout_ TRENDLINE_ESTIMATOR* Estimator,
+    _In_ double TimeDeltaMs
+    )
+{
+    if (Estimator->DelayHistCount < TRENDLINE_WINDOW_SIZE) {
+        Estimator->ModifiedTrend = 0.0;
+        Estimator->OveruseState = TRENDLINE_NORMAL;
+        return;
+    }
+
+    uint32_t NumDeltas =
+        Estimator->NumDeltas < TRENDLINE_MIN_NUM_DELTAS ?
+            (uint32_t)Estimator->NumDeltas : TRENDLINE_MIN_NUM_DELTAS;
+
+    Estimator->ModifiedTrend =
+        (double)NumDeltas * Estimator->TrendlineSlope * TRENDLINE_THRESHOLD_GAIN;
+
+    if (Estimator->ModifiedTrend > Estimator->Threshold) {
+        Estimator->TimeOverUsingMs += TimeDeltaMs;
+        Estimator->OveruseCounter++;
+
+        if (Estimator->TimeOverUsingMs > TRENDLINE_OVERUSING_TIME_THRESHOLD_MS &&
+            Estimator->OveruseCounter > TRENDLINE_OVERUSE_COUNTER_THRESHOLD &&
+            Estimator->TrendlineSlope >= Estimator->PrevTrendlineSlope) {
+            Estimator->OveruseState = TRENDLINE_OVERUSING;
+        }
+    } else if (Estimator->ModifiedTrend < -Estimator->Threshold) {
+        Estimator->TimeOverUsingMs = 0.0;
+        Estimator->OveruseCounter = 0;
+        Estimator->OveruseState = TRENDLINE_UNDERUSING;
+    } else {
+        Estimator->TimeOverUsingMs = 0.0;
+        Estimator->OveruseCounter = 0;
+        Estimator->OveruseState = TRENDLINE_NORMAL;
+    }
 }
 
 void
@@ -140,6 +183,9 @@ TrendlineEstimatorUpdate(
         if (Estimator->DelayHistCount >= TRENDLINE_WINDOW_SIZE) {
             Estimator->TrendlineSlope = LinearFitSlope(Estimator);
         }
+        TrendlineEstimatorDetectOveruse(
+            Estimator,
+            (double)timeSinceLastUpdate / 1000.0);
 
         // Reset interval counters
         Estimator->LastSlopeUpdateTimeUs = ArrivalTimeUs;
@@ -184,6 +230,11 @@ TrendlineEstimatorUpdateBatch(
         return;
     }
 
+    Estimator->NumDeltas++;
+    if (Estimator->NumDeltas > 1000) {
+        Estimator->NumDeltas = 1000;
+    }
+
     // Calculate one-way delay variation
     double deltaMs = (double)(RecvDeltaUs - SendDeltaUs) / 1000.0;
 
@@ -216,12 +267,14 @@ TrendlineEstimatorUpdateBatch(
     if (Estimator->DelayHistCount >= TRENDLINE_WINDOW_SIZE) {
         Estimator->TrendlineSlope = LinearFitSlope(Estimator);
     }
+    TrendlineEstimatorDetectOveruse(
+        Estimator,
+        (double)RecvDeltaUs / 1000.0);
 
     // Update previous batch info
     Estimator->PrevBatchSendTimeUs = BatchSendTimeUs;
     Estimator->PrevBatchRecvTimeUs = BatchRecvTimeUs;
     Estimator->LastUpdateTimeUs = (int64_t)BatchRecvTimeUs;
-    Estimator->NumDeltas++;
 }
 
 double
@@ -230,6 +283,38 @@ TrendlineEstimatorGetSlope(
     )
 {
     return Estimator->TrendlineSlope;
+}
+
+TRENDLINE_OVERUSE_STATE
+TrendlineEstimatorGetOveruseState(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    )
+{
+    return Estimator->OveruseState;
+}
+
+BOOLEAN
+TrendlineEstimatorIsOverusing(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    )
+{
+    return Estimator->OveruseState == TRENDLINE_OVERUSING;
+}
+
+const char*
+TrendlineEstimatorGetOveruseStateName(
+    _In_ const TRENDLINE_ESTIMATOR* Estimator
+    )
+{
+    switch (Estimator->OveruseState) {
+    case TRENDLINE_OVERUSING:
+        return "OVERUSING";
+    case TRENDLINE_UNDERUSING:
+        return "UNDERUSING";
+    case TRENDLINE_NORMAL:
+    default:
+        return "NORMAL";
+    }
 }
 
 void
